@@ -24,11 +24,7 @@ jobs:
 
       - name: Build app
         run: |
-          make build
-
-      - name: Package app
-        run: |
-          goreleaser --snapshot --rm-dist
+          make release
 
       - name: Create release
         uses: actions/create-release@v1
