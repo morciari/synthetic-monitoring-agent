@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/pprof"
-	"os"
 	"strconv"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,6 +27,7 @@ type MuxOpts struct {
 	isReady           *readynessHandler
 	disconnectEnabled bool
 	pprofEnabled      bool
+	sigCh             chan bool
 }
 
 func NewMux(opts MuxOpts) *Mux {
@@ -49,9 +48,10 @@ func NewMux(opts MuxOpts) *Mux {
 	isReady.Store(false)
 	router.Handle("/ready", opts.isReady)
 
+	dh := disconnectHandler{opts: opts}
 	// disconnect this agent from the API
 	if opts.disconnectEnabled {
-		router.Handle("/disconnect", http.HandlerFunc(disconnectHandler))
+		router.Handle("/disconnect", dh)
 	}
 
 	// Register pprof handlers
@@ -163,26 +163,13 @@ func (h *readynessHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "ready")
 }
 
+type disconnectHandler struct {
+	opts MuxOpts
+}
+
 // disconnectHandler triggers a disconnection from the API.
-func disconnectHandler(w http.ResponseWriter, r *http.Request) {
-	// TODO(mem): this is a hack to trigger a disconnection from the
-	// API, it would be cleaner to do this through a channel that
-	// communicates the request to the checks updater.
-
-	p, err := os.FindProcess(os.Getpid())
-	if err != nil {
-		msg := fmt.Sprintf("%s: %s", http.StatusText(http.StatusInternalServerError), err.Error())
-		http.Error(w, msg, http.StatusInternalServerError)
-		return
-	}
-
-	// SIGUSR1 will disconnect agent from API for 1 minute
-	err = p.Signal(syscall.SIGUSR1)
-	if err != nil {
-		msg := fmt.Sprintf("%s: %s", http.StatusText(http.StatusInternalServerError), err.Error())
-		http.Error(w, msg, http.StatusInternalServerError)
-		return
-	}
+func (dh disconnectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	dh.opts.sigCh <- true
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "disconnecting this agent from the API for 1 minute.")
