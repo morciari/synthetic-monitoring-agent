@@ -118,12 +118,36 @@ func run(args []string, stdout io.Writer) error {
 	// to know if probe is connected to API
 	readynessHandler := NewReadynessHandler()
 
+	publishCh := make(chan pusher.Payload)
+	tenantCh := make(chan synthetic_monitoring.Tenant)
+
+	conn, err := dialAPIServer(ctx, *grpcApiServerAddr, *grpcInsecure, *apiToken)
+	if err != nil {
+		return fmt.Errorf("dialing GRPC server %s: %w", *grpcApiServerAddr, err)
+	}
+	defer conn.Close()
+
+	checksUpdater, err := checks.NewUpdater(checks.UpdaterOptions{
+		Conn:           conn,
+		Logger:         zl.With().Str("subsystem", "updater").Logger(),
+		Backoff:        newConnectionBackoff(),
+		PublishCh:      publishCh,
+		TenantCh:       tenantCh,
+		IsConnected:    readynessHandler.Set,
+		PromRegisterer: promRegisterer,
+		Features:       features,
+	})
+	if err != nil {
+		return fmt.Errorf("Cannot create checks updater: %w", err)
+	}
+
 	router := NewMux(MuxOpts{
 		Logger:            zl.With().Str("subsystem", "mux").Logger(),
 		PromRegisterer:    promRegisterer,
 		isReady:           readynessHandler,
 		disconnectEnabled: *enableDisconnect,
 		pprofEnabled:      *enablePProf,
+		sigCh:             checksUpdater.SigCh,
 	})
 
 	httpConfig := http.Config{
@@ -154,29 +178,6 @@ func run(args []string, stdout io.Writer) error {
 	g.Go(func() error {
 		return httpServer.Run(httpListener)
 	})
-
-	publishCh := make(chan pusher.Payload)
-	tenantCh := make(chan synthetic_monitoring.Tenant)
-
-	conn, err := dialAPIServer(ctx, *grpcApiServerAddr, *grpcInsecure, *apiToken)
-	if err != nil {
-		return fmt.Errorf("dialing GRPC server %s: %w", *grpcApiServerAddr, err)
-	}
-	defer conn.Close()
-
-	checksUpdater, err := checks.NewUpdater(checks.UpdaterOptions{
-		Conn:           conn,
-		Logger:         zl.With().Str("subsystem", "updater").Logger(),
-		Backoff:        newConnectionBackoff(),
-		PublishCh:      publishCh,
-		TenantCh:       tenantCh,
-		IsConnected:    readynessHandler.Set,
-		PromRegisterer: promRegisterer,
-		Features:       features,
-	})
-	if err != nil {
-		return fmt.Errorf("Cannot create checks updater: %w", err)
-	}
 
 	g.Go(func() error {
 		return checksUpdater.Run(ctx)
