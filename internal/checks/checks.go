@@ -69,7 +69,7 @@ type Updater struct {
 	scrapers       map[int64]*scraper.Scraper
 	metrics        metrics
 	scraperFactory func(context.Context, sm.Check, chan<- pusher.Payload, sm.Probe, zerolog.Logger, prometheus.Counter, *prometheus.CounterVec) (*scraper.Scraper, error)
-	sigCh          chan bool
+	SigCh          chan bool
 }
 
 type apiInfo struct {
@@ -511,11 +511,11 @@ func (c *Updater) installSignalHandler(ctx context.Context) (context.Context, *i
 
 	fired := new(int32)
 
-	c.sigCh = make(chan bool, 1)
+	c.SigCh = make(chan bool, 1)
 
 	go func() {
 		select {
-		case <-c.sigCh:
+		case <-c.SigCh:
 			atomic.StoreInt32(fired, 1)
 			cancel()
 		case <-ctx.Done():
