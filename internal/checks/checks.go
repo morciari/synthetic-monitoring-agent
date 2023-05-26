@@ -5,12 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/grafana/synthetic-monitoring-agent/internal/feature"
@@ -72,6 +69,7 @@ type Updater struct {
 	scrapers       map[int64]*scraper.Scraper
 	metrics        metrics
 	scraperFactory func(context.Context, sm.Check, chan<- pusher.Payload, sm.Probe, zerolog.Logger, prometheus.Counter, *prometheus.CounterVec) (*scraper.Scraper, error)
+	sigCh          chan bool
 }
 
 type apiInfo struct {
@@ -390,7 +388,7 @@ func (c *Updater) loop(ctx context.Context) (bool, error) {
 	// returning from this function; cancelling the new context
 	// because the signal fired), so we need an additional way of
 	// telling them apart.
-	sigCtx, signalFired := installSignalHandler(groupCtx)
+	sigCtx, signalFired := c.installSignalHandler(groupCtx)
 
 	errorHandler := func(err error, action string, signalFired *int32) error {
 		switch {
@@ -508,22 +506,20 @@ func ping(ctx context.Context, client synthetic_monitoring.ChecksClient) error {
 // Done channel is closed, too. It's the callers responsibility to
 // cancel the provided context if it's no longer interested in the
 // signal.
-func installSignalHandler(ctx context.Context) (context.Context, *int32) {
+func (c *Updater) installSignalHandler(ctx context.Context) (context.Context, *int32) {
 	sigCtx, cancel := context.WithCancel(ctx)
 
 	fired := new(int32)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGUSR1)
+	c.sigCh = make(chan bool, 1)
 
 	go func() {
 		select {
-		case <-sigCh:
+		case <-c.sigCh:
 			atomic.StoreInt32(fired, 1)
 			cancel()
 		case <-ctx.Done():
 		}
-		signal.Stop(sigCh)
 	}()
 
 	return sigCtx, fired
